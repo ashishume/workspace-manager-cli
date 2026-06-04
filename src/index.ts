@@ -9,6 +9,10 @@ import path from "node:path";
 import { DEFAULT_REPOS } from "./default-repos.js";
 import type { ProjectType, Repo } from "./types.js";
 
+const DEFAULT_CLONE_TIMEOUT_S = 60;
+const DEFAULT_INSTALL_TIMEOUT_S = 120;
+const DEFAULT_BUILD_TIMEOUT_S = 120;
+
 type SetupOptions = {
   target: string;
   config: string;
@@ -17,6 +21,9 @@ type SetupOptions = {
   pull: boolean;
   skipInstall: boolean;
   skipBuild: boolean;
+  cloneTimeout: string;
+  installTimeout: string;
+  buildTimeout: string;
 };
 
 type InitOptions = {
@@ -57,6 +64,9 @@ program
   .option("--pull", "run git pull in repositories that already exist", false)
   .option("--skip-install", "clone/pull only, skip dependency installation", false)
   .option("--skip-build", "skip the post-install build step even for TS/React/Next/Vite projects", false)
+  .option("--clone-timeout <seconds>", `seconds before a clone/pull is killed (0 = no limit)`, String(DEFAULT_CLONE_TIMEOUT_S))
+  .option("--install-timeout <seconds>", `seconds before an install is killed (0 = no limit)`, String(DEFAULT_INSTALL_TIMEOUT_S))
+  .option("--build-timeout <seconds>", `seconds before a build is killed (0 = no limit)`, String(DEFAULT_BUILD_TIMEOUT_S))
   .action((options: SetupOptions) => {
     setup(options).catch((error: unknown) => {
       console.error(error instanceof Error ? error.message : error);
@@ -72,15 +82,21 @@ async function setup(options: SetupOptions) {
   const configPath = path.resolve(cwd, options.config);
   const concurrency = parseConcurrency(options.concurrency);
   const packageManager = options.packageManager.trim();
+  const cloneTimeout = parseTimeout(options.cloneTimeout, "--clone-timeout");
+  const installTimeout = parseTimeout(options.installTimeout, "--install-timeout");
+  const buildTimeout = parseTimeout(options.buildTimeout, "--build-timeout");
 
   const { repos, source } = await loadRepos(configPath);
 
   await fs.ensureDir(targetDir);
 
-  console.log(`Using repos : ${source}`);
-  console.log(`Target      : ${targetDir}`);
-  console.log(`Repos       : ${repos.length}`);
-  console.log(`Concurrency : ${concurrency}`);
+  console.log(`Using repos      : ${source}`);
+  console.log(`Target           : ${targetDir}`);
+  console.log(`Repos            : ${repos.length}`);
+  console.log(`Concurrency      : ${concurrency}`);
+  console.log(`Clone timeout    : ${cloneTimeout ? `${cloneTimeout / 1000}s` : "none"}`);
+  console.log(`Install timeout  : ${installTimeout ? `${installTimeout / 1000}s` : "none"}`);
+  console.log(`Build timeout    : ${buildTimeout ? `${buildTimeout / 1000}s` : "none"}`);
   console.log("");
 
   const limit = pLimit(concurrency);
@@ -93,7 +109,10 @@ async function setup(options: SetupOptions) {
           packageManager,
           pull: options.pull,
           skipInstall: options.skipInstall,
-          skipBuild: options.skipBuild
+          skipBuild: options.skipBuild,
+          cloneTimeout,
+          installTimeout,
+          buildTimeout
         })
       )
     )
@@ -141,7 +160,10 @@ async function setupRepo({
   packageManager,
   pull,
   skipInstall,
-  skipBuild
+  skipBuild,
+  cloneTimeout,
+  installTimeout,
+  buildTimeout
 }: {
   repo: Repo;
   targetDir: string;
@@ -149,9 +171,15 @@ async function setupRepo({
   pull: boolean;
   skipInstall: boolean;
   skipBuild: boolean;
+  cloneTimeout: number;
+  installTimeout: number;
+  buildTimeout: number;
 }): Promise<RepoResult> {
   const repoDir = path.join(targetDir, repo.name);
   const exists = await fs.pathExists(repoDir);
+
+  // Prevent git from hanging on credential prompts
+  const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
 
   // ── clone / pull ──────────────────────────────────────────────────────────
   try {
@@ -160,7 +188,11 @@ async function setupRepo({
 
       if (pull) {
         spinner.text = `${repo.name}: pulling latest changes`;
-        await execa("git", ["pull", "--ff-only"], { cwd: repoDir });
+        await execa("git", ["pull", "--ff-only"], {
+          cwd: repoDir,
+          env: gitEnv,
+          ...(cloneTimeout && { timeout: cloneTimeout })
+        });
       }
 
       spinner.succeed(`${repo.name}: repository ready`);
@@ -172,11 +204,19 @@ async function setupRepo({
         args.splice(1, 0, "--branch", repo.branch);
       }
 
-      await execa("git", args);
+      await execa("git", args, {
+        env: gitEnv,
+        ...(cloneTimeout && { timeout: cloneTimeout })
+      });
       spinner.succeed(`${repo.name}: cloned`);
     }
   } catch (err) {
-    return { status: "failed", name: repo.name, step: exists ? "pull" : "clone", message: extractMessage(err) };
+    return {
+      status: "failed",
+      name: repo.name,
+      step: exists ? "pull" : "clone",
+      message: formatError(err, cloneTimeout)
+    };
   }
 
   if (skipInstall) {
@@ -186,10 +226,18 @@ async function setupRepo({
   // ── install ───────────────────────────────────────────────────────────────
   try {
     const installSpinner = ora(`${repo.name}: installing dependencies`).start();
-    await execa(packageManager, ["install"], { cwd: repoDir });
+    await execa(packageManager, ["install"], {
+      cwd: repoDir,
+      ...(installTimeout && { timeout: installTimeout })
+    });
     installSpinner.succeed(`${repo.name}: dependencies installed`);
   } catch (err) {
-    return { status: "failed", name: repo.name, step: "install", message: extractMessage(err) };
+    return {
+      status: "failed",
+      name: repo.name,
+      step: "install",
+      message: formatError(err, installTimeout)
+    };
   }
 
   if (skipBuild) {
@@ -201,11 +249,19 @@ async function setupRepo({
     const runBuild = await resolveBuild(repo, repoDir);
     if (runBuild) {
       const buildSpinner = ora(`${repo.name}: building`).start();
-      await execa(packageManager, ["run", "build"], { cwd: repoDir });
+      await execa(packageManager, ["run", "build"], {
+        cwd: repoDir,
+        ...(buildTimeout && { timeout: buildTimeout })
+      });
       buildSpinner.succeed(`${repo.name}: build complete`);
     }
   } catch (err) {
-    return { status: "failed", name: repo.name, step: "build", message: extractMessage(err) };
+    return {
+      status: "failed",
+      name: repo.name,
+      step: "build",
+      message: formatError(err, buildTimeout)
+    };
   }
 
   return { status: "ok", name: repo.name };
@@ -293,16 +349,28 @@ function validateRepos(repos: unknown): asserts repos is Repo[] {
 }
 
 function parseConcurrency(value: string) {
-  const concurrency = Number(value);
-
-  if (!Number.isInteger(concurrency) || concurrency < 1) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) {
     throw new Error("--concurrency must be a positive integer.");
   }
-
-  return concurrency;
+  return n;
 }
 
-function extractMessage(err: unknown): string {
-  if (err instanceof Error) return err.message.split("\n")[0].trim();
+function parseTimeout(value: string, flag: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`${flag} must be a non-negative integer (0 = no limit).`);
+  }
+  return n * 1000; // convert to ms for execa
+}
+
+function formatError(err: unknown, timeoutMs: number): string {
+  if (err instanceof Error) {
+    // execa sets .timedOut = true on timeout kills
+    if ((err as NodeJS.ErrnoException & { timedOut?: boolean }).timedOut) {
+      return `timed out after ${timeoutMs / 1000}s`;
+    }
+    return err.message.split("\n")[0].trim();
+  }
   return String(err);
 }
