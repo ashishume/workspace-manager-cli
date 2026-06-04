@@ -1,10 +1,10 @@
 {
   "name": "@ashishdev97/workspace-manager",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "CLI to manage and install multiple repositories in one workspace.",
   "type": "module",
   "bin": {
-    "setup-repos": "./dist/index.js"
+    "setup-repos": "dist/index.js"
   },
   "files": [
     "dist",
