@@ -1,90 +1,149 @@
-# Multi Repo Setup CLI
+# workspace-manager
 
-Clone and install 14 TypeScript repositories into one local workspace.
+A CLI to clone and set up multiple repositories in one shot.
 
-## Use As A Custom Command
+Supports **Node.js**, **TypeScript**, **React**, **Next.js**, **Vite**, and **FastAPI / Python** projects — detected automatically from each repo's files.
 
-Build it once:
-
-```bash
-npm install
-npm run build
-```
-
-Install the command globally on your machine while developing:
+## Install
 
 ```bash
-npm link
+npm install -g @ashishdev97/workspace-manager
 ```
 
-Now you can run this from any folder:
+## Quick start
 
 ```bash
-setup-repos --target ./workspace
+# 1. Generate a config file
+setup-repos init
+
+# 2. Edit repos.json with your own repositories
+# 3. Run setup
+setup-repos setup
 ```
 
-You do not need to keep opening this CLI repo every time after it is installed globally.
+`repos.json` example:
 
-## Sharing With Everyone
+```json
+[
+  { "name": "my-api",      "url": "https://github.com/your-org/my-api.git" },
+  { "name": "my-frontend", "url": "https://github.com/your-org/my-frontend.git" },
+  { "name": "my-service",  "url": "https://github.com/your-org/my-service.git", "branch": "develop" }
+]
+```
 
-You have two good options.
-
-Publish this package to npm, GitHub Packages, or your company registry. Then teammates install it with:
+Then run:
 
 ```bash
-npm install -g multi-repo-setup-cli
-setup-repos --target ./workspace
+setup-repos setup
 ```
 
-Or put this CLI in a GitHub repo and let teammates install it directly:
+This clones every repo, installs dependencies, and runs the build step where needed — all in parallel.
 
-```bash
-npm install -g git+ssh://git@github.com/your-org/multi-repo-setup-cli.git
-setup-repos --target ./workspace
-```
+## What gets set up automatically
 
-For a team-wide command with no config file, replace the placeholder URLs in `src/default-repos.ts`, build, and publish/share the package.
+| Files found in repo | Detected as | Install | Build |
+|---|---|---|---|
+| `requirements.txt` with `fastapi` | FastAPI | `pip install -r requirements.txt` in `.venv` | — |
+| `requirements.txt` | Python | `pip install -r requirements.txt` in `.venv` | — |
+| `pyproject.toml` / `setup.py` | Python | `pip install -e .` in `.venv` | — |
+| `package.json` with `next` | Next.js | `npm install` | `npm run build` |
+| `package.json` with `react` | React | `npm install` | `npm run build` |
+| `package.json` with `vite` | Vite | `npm install` | `npm run build` |
+| `package.json` with `typescript` | TypeScript | `npm install` | `npm run build` |
+| `package.json` only | Node.js | `npm install` | — |
+| Empty repo | — | skipped with warning | — |
 
-For per-user config, generate a config file:
+Build only runs if the repo has a `build` script in `package.json`.
+
+## Commands
+
+### `setup-repos init`
+
+Creates a `repos.json` template in the current directory.
 
 ```bash
 setup-repos init
+setup-repos init --config ./config/repos.json   # custom path
+setup-repos init --force                         # overwrite existing
 ```
 
-Then edit `repos.json`.
+### `setup-repos setup`
 
-## Run Locally Without Global Install
+Clones and sets up all repositories.
 
 ```bash
-npm run setup -- --target ./workspace
+setup-repos setup [options]
 ```
 
-This creates:
+| Option | Default | Description |
+|---|---|---|
+| `-t, --target <dir>` | `./workspace` | Folder where repos are cloned |
+| `-c, --config <file>` | `./repos.json` | Path to repo config (uses embedded defaults if missing) |
+| `--concurrency <n>` | `3` | Number of repos to process in parallel |
+| `--package-manager <cmd>` | `npm` | JS package manager (`npm`, `yarn`, `pnpm`) |
+| `--python <cmd>` | `python3` | Python binary used to create virtual environments |
+| `--pull` | `false` | Run `git pull` in repos that already exist |
+| `--skip-install` | `false` | Clone/pull only, skip dependency installation |
+| `--skip-build` | `false` | Skip the build step for all repos |
+| `--clone-timeout <s>` | `60` | Seconds before a clone/pull is killed (0 = no limit) |
+| `--install-timeout <s>` | `120` | Seconds before an install is killed (0 = no limit) |
+| `--build-timeout <s>` | `120` | Seconds before a build is killed (0 = no limit) |
 
-```txt
-workspace/
-  repo-01/
-  repo-02/
-  ...
-  repo-14/
+## Per-repo config
+
+Each entry in `repos.json` supports these fields:
+
+```json
+[
+  {
+    "name": "my-api",
+    "url": "https://github.com/your-org/my-api.git",
+    "branch": "develop",
+    "type": "fastapi",
+    "build": false
+  }
+]
 ```
 
-## Options
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Folder name the repo is cloned into |
+| `url` | `string` | Git clone URL |
+| `branch` | `string` | Branch to clone (optional) |
+| `type` | `string` | Override auto-detection: `auto` `node` `typescript` `react` `next` `vite` `python` `fastapi` |
+| `build` | `boolean` | Force (`true`) or suppress (`false`) the build step |
+
+## Error handling
+
+Each repo is processed independently. If one fails, the others continue. At the end, all failures are reported together with the exact step and error:
+
+```
+6 repo(s) ready.
+
+2 repo(s) failed:
+
+  ✗ my-api       [clone]    fatal: repository not found
+  ✗ my-frontend  [install]  npm error code ERESOLVE
+```
+
+## Examples
 
 ```bash
-setup-repos --target ./workspace --config ./repos.json --concurrency 3
-```
+# Use yarn instead of npm
+setup-repos setup --package-manager yarn
 
-- `--target`: folder where all repositories will be cloned. Defaults to `./workspace`.
-- `--config`: repo config file. Defaults to `./repos.json`. If missing, the embedded defaults are used.
-- `--concurrency`: number of repos to process at once. Defaults to `3`.
-- `--package-manager`: install command to run. Defaults to `npm`.
-- `--pull`: run `git pull` in repositories that already exist.
-- `--skip-install`: clone/pull only, without installing dependencies.
+# Clone only, skip install and build
+setup-repos setup --skip-install
 
-After building, you can also run the compiled CLI:
+# Use a specific Python version
+setup-repos setup --python python3.11
 
-```bash
-npm run build
-npm start -- setup --target ./workspace
+# Give slow repos more time to install
+setup-repos setup --install-timeout 300
+
+# Update all existing repos
+setup-repos setup --pull --skip-install
+
+# Point to a custom config file
+setup-repos setup --config ./team-repos.json --target ~/projects
 ```
