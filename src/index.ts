@@ -34,7 +34,7 @@ type InitOptions = {
 
 type RepoResult =
   | { status: "ok"; name: string }
-  | { status: "failed"; name: string; step: string; message: string };
+  | { status: "failed"; name: string; step: string; message: string; output: string };
 
 const program = new Command();
 
@@ -135,6 +135,12 @@ async function setup(options: SetupOptions) {
     console.error(`\n${failed.length} repo(s) failed:\n`);
     for (const r of failed) {
       console.error(`  ✗ ${r.name}  [${r.step}]  ${r.message}`);
+      if (r.output) {
+        for (const line of r.output.split("\n")) {
+          console.error(`      ${line}`);
+        }
+        console.error("");
+      }
     }
     process.exitCode = 1;
   }
@@ -199,7 +205,7 @@ async function setupRepo({
         });
       } catch (err) {
         spinner.fail(`${repo.name}: pull failed`);
-        return { status: "failed", name: repo.name, step: "pull", message: formatError(err, cloneTimeout) };
+        return { status: "failed", name: repo.name, step: "pull", message: formatError(err, cloneTimeout), output: extractOutput(err, cloneTimeout) };
       }
     }
 
@@ -219,7 +225,7 @@ async function setupRepo({
       });
     } catch (err) {
       spinner.fail(`${repo.name}: clone failed`);
-      return { status: "failed", name: repo.name, step: "clone", message: formatError(err, cloneTimeout) };
+      return { status: "failed", name: repo.name, step: "clone", message: formatError(err, cloneTimeout), output: extractOutput(err, cloneTimeout) };
     }
 
     spinner.succeed(`${repo.name}: cloned`);
@@ -253,7 +259,8 @@ async function setupRepo({
         status: "failed",
         name: repo.name,
         step: "install",
-        message: formatError(err, installTimeout)
+        message: formatError(err, installTimeout),
+        output: extractOutput(err, installTimeout)
       };
     }
   } else {
@@ -266,7 +273,7 @@ async function setupRepo({
       installSpinner.succeed(`${repo.name}: dependencies installed`);
     } catch (err) {
       installSpinner.fail(`${repo.name}: install failed`);
-      return { status: "failed", name: repo.name, step: "install", message: formatError(err, installTimeout) };
+      return { status: "failed", name: repo.name, step: "install", message: formatError(err, installTimeout), output: extractOutput(err, installTimeout) };
     }
   }
 
@@ -283,7 +290,7 @@ async function setupRepo({
         buildSpinner.succeed(`${repo.name}: build complete`);
       } catch (err) {
         buildSpinner.fail(`${repo.name}: build failed`);
-        return { status: "failed", name: repo.name, step: "build", message: formatError(err, buildTimeout) };
+        return { status: "failed", name: repo.name, step: "build", message: formatError(err, buildTimeout), output: extractOutput(err, buildTimeout) };
       }
     }
   }
@@ -316,7 +323,7 @@ async function pythonInstall(
       venvSpinner.succeed(`${repoName}: virtual environment created`);
     } catch (err) {
       venvSpinner.fail(`${repoName}: failed to create virtual environment`);
-      return { status: "failed", name: repoName, step: "venv", message: formatError(err, timeout) };
+      return { status: "failed", name: repoName, step: "venv", message: formatError(err, timeout), output: extractOutput(err, timeout) };
     }
   }
 
@@ -475,13 +482,21 @@ function formatError(err: unknown, timeoutMs: number): string {
 
   if (e.timedOut) return `timed out after ${timeoutMs / 1000}s`;
 
-  // execa puts the real error output in stderr (or stdout for some tools)
   const detail = (e.stderr ?? e.stdout ?? "").trim();
   if (detail) {
-    // return the last non-empty line — that's usually the actual error
     const lines = detail.split("\n").map(l => l.trim()).filter(Boolean);
     return lines[lines.length - 1] ?? detail;
   }
 
   return err.message.split("\n")[0].trim();
+}
+
+function extractOutput(err: unknown, timeoutMs: number): string {
+  if (!(err instanceof Error)) return String(err);
+
+  const e = err as NodeJS.ErrnoException & { timedOut?: boolean; stderr?: string; stdout?: string };
+
+  if (e.timedOut) return `Command timed out after ${timeoutMs / 1000}s`;
+
+  return (e.stderr ?? e.stdout ?? "").trim();
 }
