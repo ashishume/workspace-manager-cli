@@ -124,9 +124,15 @@ async function initConfig(options: InitOptions) {
     throw new Error(`Config already exists: ${configPath}\nUse --force to overwrite it.`);
   }
 
+  const template = [
+    { name: "repo-01", url: "https://github.com/your-org/repo-01.git" },
+    { name: "repo-02", url: "https://github.com/your-org/repo-02.git" }
+  ];
+
   await fs.ensureDir(path.dirname(configPath));
-  await fs.writeJson(configPath, DEFAULT_REPOS, { spaces: 2 });
+  await fs.writeJson(configPath, template, { spaces: 2 });
   console.log(`Created ${configPath}`);
+  console.log(`Edit it to add your own repositories, then run: setup-repos setup`);
 }
 
 async function setupRepo({
