@@ -1,0 +1,58 @@
+[
+  {
+    "name": "repo-01",
+    "url": "git@github.com:your-org/repo-01.git"
+  },
+  {
+    "name": "repo-02",
+    "url": "git@github.com:your-org/repo-02.git"
+  },
+  {
+    "name": "repo-03",
+    "url": "git@github.com:your-org/repo-03.git"
+  },
+  {
+    "name": "repo-04",
+    "url": "git@github.com:your-org/repo-04.git"
+  },
+  {
+    "name": "repo-05",
+    "url": "git@github.com:your-org/repo-05.git"
+  },
+  {
+    "name": "repo-06",
+    "url": "git@github.com:your-org/repo-06.git"
+  },
+  {
+    "name": "repo-07",
+    "url": "git@github.com:your-org/repo-07.git"
+  },
+  {
+    "name": "repo-08",
+    "url": "git@github.com:your-org/repo-08.git"
+  },
+  {
+    "name": "repo-09",
+    "url": "git@github.com:your-org/repo-09.git"
+  },
+  {
+    "name": "repo-10",
+    "url": "git@github.com:your-org/repo-10.git"
+  },
+  {
+    "name": "repo-11",
+    "url": "git@github.com:your-org/repo-11.git"
+  },
+  {
+    "name": "repo-12",
+    "url": "git@github.com:your-org/repo-12.git"
+  },
+  {
+    "name": "repo-13",
+    "url": "git@github.com:your-org/repo-13.git"
+  },
+  {
+    "name": "repo-14",
+    "url": "git@github.com:your-org/repo-14.git"
+  }
+]

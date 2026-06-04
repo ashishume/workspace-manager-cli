@@ -1,0 +1,35 @@
+{
+  "name": "@ashishdev97/workspace-manager",
+  "version": "1.5.1",
+  "description": "CLI to manage and install multiple repositories in one workspace.",
+  "type": "module",
+  "bin": {
+    "setup-repos": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "repos.example.json"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "setup": "tsx src/index.ts setup",
+    "prepare": "npm run build",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "execa": "^9.6.0",
+    "fs-extra": "^11.3.0",
+    "ora": "^8.2.0",
+    "p-limit": "^6.2.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
