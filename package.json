@@ -1,6 +1,6 @@
 {
   "name": "@ashishdev97/workspace-manager",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "CLI to manage and install multiple repositories in one workspace.",
   "type": "module",
   "bin": {
