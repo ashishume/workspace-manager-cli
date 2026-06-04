@@ -18,6 +18,7 @@ type SetupOptions = {
   config: string;
   concurrency: string;
   packageManager: string;
+  python: string;
   pull: boolean;
   skipInstall: boolean;
   skipBuild: boolean;
@@ -39,7 +40,7 @@ const program = new Command();
 
 program
   .name("setup-repos")
-  .description("Clone and set up Node, React, TypeScript, and other JS/TS repositories.")
+  .description("Clone and set up Node, React, TypeScript, FastAPI, and other repositories.")
   .version("0.1.0");
 
 program
@@ -60,13 +61,14 @@ program
   .option("-t, --target <dir>", "folder where repositories will be cloned", "./workspace")
   .option("-c, --config <file>", "JSON file containing repository definitions", "./repos.json")
   .option("--concurrency <number>", "number of repositories to process at once", "3")
-  .option("--package-manager <command>", "package manager install command (npm, yarn, pnpm)", "npm")
+  .option("--package-manager <command>", "JS package manager install command (npm, yarn, pnpm)", "npm")
+  .option("--python <command>", "Python binary to use for venv creation", "python3")
   .option("--pull", "run git pull in repositories that already exist", false)
   .option("--skip-install", "clone/pull only, skip dependency installation", false)
-  .option("--skip-build", "skip the post-install build step even for TS/React/Next/Vite projects", false)
-  .option("--clone-timeout <seconds>", `seconds before a clone/pull is killed (0 = no limit)`, String(DEFAULT_CLONE_TIMEOUT_S))
-  .option("--install-timeout <seconds>", `seconds before an install is killed (0 = no limit)`, String(DEFAULT_INSTALL_TIMEOUT_S))
-  .option("--build-timeout <seconds>", `seconds before a build is killed (0 = no limit)`, String(DEFAULT_BUILD_TIMEOUT_S))
+  .option("--skip-build", "skip the post-install build step for TS/React/Next/Vite projects", false)
+  .option("--clone-timeout <seconds>", "seconds before a clone/pull is killed (0 = no limit)", String(DEFAULT_CLONE_TIMEOUT_S))
+  .option("--install-timeout <seconds>", "seconds before an install is killed (0 = no limit)", String(DEFAULT_INSTALL_TIMEOUT_S))
+  .option("--build-timeout <seconds>", "seconds before a build is killed (0 = no limit)", String(DEFAULT_BUILD_TIMEOUT_S))
   .action((options: SetupOptions) => {
     setup(options).catch((error: unknown) => {
       console.error(error instanceof Error ? error.message : error);
@@ -82,6 +84,7 @@ async function setup(options: SetupOptions) {
   const configPath = path.resolve(cwd, options.config);
   const concurrency = parseConcurrency(options.concurrency);
   const packageManager = options.packageManager.trim();
+  const python = options.python.trim();
   const cloneTimeout = parseTimeout(options.cloneTimeout, "--clone-timeout");
   const installTimeout = parseTimeout(options.installTimeout, "--install-timeout");
   const buildTimeout = parseTimeout(options.buildTimeout, "--build-timeout");
@@ -107,6 +110,7 @@ async function setup(options: SetupOptions) {
           repo,
           targetDir,
           packageManager,
+          python,
           pull: options.pull,
           skipInstall: options.skipInstall,
           skipBuild: options.skipBuild,
@@ -158,6 +162,7 @@ async function setupRepo({
   repo,
   targetDir,
   packageManager,
+  python,
   pull,
   skipInstall,
   skipBuild,
@@ -168,6 +173,7 @@ async function setupRepo({
   repo: Repo;
   targetDir: string;
   packageManager: string;
+  python: string;
   pull: boolean;
   skipInstall: boolean;
   skipBuild: boolean;
@@ -177,8 +183,6 @@ async function setupRepo({
 }): Promise<RepoResult> {
   const repoDir = path.join(targetDir, repo.name);
   const exists = await fs.pathExists(repoDir);
-
-  // Prevent git from hanging on credential prompts
   const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
 
   // ── clone / pull ──────────────────────────────────────────────────────────
@@ -223,66 +227,158 @@ async function setupRepo({
     return { status: "ok", name: repo.name };
   }
 
+  // ── detect project type ───────────────────────────────────────────────────
+  const projectType = repo.type && repo.type !== "auto"
+    ? repo.type
+    : await detectProjectType(repoDir);
+
+  const isPython = projectType === "python" || projectType === "fastapi";
+
   // ── install ───────────────────────────────────────────────────────────────
-  try {
-    const installSpinner = ora(`${repo.name}: installing dependencies`).start();
-    await execa(packageManager, ["install"], {
-      cwd: repoDir,
-      ...(installTimeout && { timeout: installTimeout })
-    });
-    installSpinner.succeed(`${repo.name}: dependencies installed`);
-  } catch (err) {
-    return {
-      status: "failed",
-      name: repo.name,
-      step: "install",
-      message: formatError(err, installTimeout)
-    };
-  }
-
-  if (skipBuild) {
-    return { status: "ok", name: repo.name };
-  }
-
-  // ── build (auto-detect for TS / React / Next / Vite) ─────────────────────
-  try {
-    const runBuild = await resolveBuild(repo, repoDir);
-    if (runBuild) {
-      const buildSpinner = ora(`${repo.name}: building`).start();
-      await execa(packageManager, ["run", "build"], {
-        cwd: repoDir,
-        ...(buildTimeout && { timeout: buildTimeout })
-      });
-      buildSpinner.succeed(`${repo.name}: build complete`);
+  if (isPython) {
+    try {
+      const result = await pythonInstall(repo.name, repoDir, python, installTimeout);
+      if (result) return result;
+    } catch (err) {
+      return {
+        status: "failed",
+        name: repo.name,
+        step: "install",
+        message: formatError(err, installTimeout)
+      };
     }
-  } catch (err) {
-    return {
-      status: "failed",
-      name: repo.name,
-      step: "build",
-      message: formatError(err, buildTimeout)
-    };
+  } else {
+    try {
+      const installSpinner = ora(`${repo.name}: installing dependencies`).start();
+      await execa(packageManager, ["install"], {
+        cwd: repoDir,
+        ...(installTimeout && { timeout: installTimeout })
+      });
+      installSpinner.succeed(`${repo.name}: dependencies installed`);
+    } catch (err) {
+      return {
+        status: "failed",
+        name: repo.name,
+        step: "install",
+        message: formatError(err, installTimeout)
+      };
+    }
+  }
+
+  // ── build (JS/TS only) ────────────────────────────────────────────────────
+  if (!isPython && !skipBuild) {
+    try {
+      const runBuild = await resolveBuild(repo, projectType, repoDir);
+      if (runBuild) {
+        const buildSpinner = ora(`${repo.name}: building`).start();
+        await execa(packageManager, ["run", "build"], {
+          cwd: repoDir,
+          ...(buildTimeout && { timeout: buildTimeout })
+        });
+        buildSpinner.succeed(`${repo.name}: build complete`);
+      }
+    } catch (err) {
+      return {
+        status: "failed",
+        name: repo.name,
+        step: "build",
+        message: formatError(err, buildTimeout)
+      };
+    }
   }
 
   return { status: "ok", name: repo.name };
 }
 
-/** Decide whether to run the build script for a repo. */
-async function resolveBuild(repo: Repo, repoDir: string): Promise<boolean> {
+/**
+ * Set up a Python project:
+ *   1. Create .venv if missing
+ *   2. pip install from requirements.txt, pyproject.toml, or setup.py
+ */
+async function pythonInstall(
+  repoName: string,
+  repoDir: string,
+  python: string,
+  timeout: number
+): Promise<RepoResult | null> {
+  const venvDir = path.join(repoDir, ".venv");
+  const pip = path.join(venvDir, "bin", "pip");
+
+  // create venv
+  if (!(await fs.pathExists(venvDir))) {
+    const venvSpinner = ora(`${repoName}: creating virtual environment`).start();
+    try {
+      await execa(python, ["-m", "venv", ".venv"], {
+        cwd: repoDir,
+        ...(timeout && { timeout })
+      });
+      venvSpinner.succeed(`${repoName}: virtual environment created`);
+    } catch (err) {
+      venvSpinner.fail(`${repoName}: failed to create virtual environment`);
+      return { status: "failed", name: repoName, step: "venv", message: formatError(err, timeout) };
+    }
+  }
+
+  // upgrade pip silently
+  await execa(pip, ["install", "--upgrade", "pip", "--quiet"], {
+    cwd: repoDir,
+    ...(timeout && { timeout })
+  }).catch(() => { /* non-fatal */ });
+
+  // pick install method
+  const hasRequirements = await fs.pathExists(path.join(repoDir, "requirements.txt"));
+  const hasPyproject = await fs.pathExists(path.join(repoDir, "pyproject.toml"));
+  const hasSetupPy = await fs.pathExists(path.join(repoDir, "setup.py"));
+
+  const installSpinner = ora(`${repoName}: installing Python dependencies`).start();
+
+  if (hasRequirements) {
+    await execa(pip, ["install", "-r", "requirements.txt"], {
+      cwd: repoDir,
+      ...(timeout && { timeout })
+    });
+  } else if (hasPyproject || hasSetupPy) {
+    await execa(pip, ["install", "-e", "."], {
+      cwd: repoDir,
+      ...(timeout && { timeout })
+    });
+  } else {
+    installSpinner.warn(`${repoName}: no requirements.txt or pyproject.toml found — skipping install`);
+    return null;
+  }
+
+  installSpinner.succeed(`${repoName}: Python dependencies installed`);
+  return null;
+}
+
+/** Decide whether to run the build script for a JS/TS repo. */
+async function resolveBuild(repo: Repo, detectedType: ProjectType, repoDir: string): Promise<boolean> {
   if (repo.build === false) return false;
   if (repo.build === true) return hasBuildScript(repoDir);
-
-  const detectedType = repo.type && repo.type !== "auto"
-    ? repo.type
-    : await detectProjectType(repoDir);
-
   if (detectedType === "node") return false;
-
   return hasBuildScript(repoDir);
 }
 
-/** Read the repo's package.json and infer project type from its dependencies. */
+/** Infer project type from the repo's files. */
 async function detectProjectType(repoDir: string): Promise<ProjectType> {
+  // Python markers take precedence
+  const [hasRequirements, hasPyproject, hasSetupPy] = await Promise.all([
+    fs.pathExists(path.join(repoDir, "requirements.txt")),
+    fs.pathExists(path.join(repoDir, "pyproject.toml")),
+    fs.pathExists(path.join(repoDir, "setup.py"))
+  ]);
+
+  if (hasRequirements || hasSetupPy) {
+    const isFastapi = hasRequirements && (await fileContains(path.join(repoDir, "requirements.txt"), "fastapi"));
+    return isFastapi ? "fastapi" : "python";
+  }
+
+  if (hasPyproject) {
+    const isFastapi = await fileContains(path.join(repoDir, "pyproject.toml"), "fastapi");
+    return isFastapi ? "fastapi" : "python";
+  }
+
+  // JS/TS detection via package.json
   const pkgPath = path.join(repoDir, "package.json");
   if (!(await fs.pathExists(pkgPath))) return "node";
 
@@ -318,6 +414,16 @@ async function hasBuildScript(repoDir: string): Promise<boolean> {
   }
 }
 
+/** Case-insensitive substring check in a file. */
+async function fileContains(filePath: string, keyword: string): Promise<boolean> {
+  try {
+    const content = await fs.readFile(filePath, "utf8");
+    return content.toLowerCase().includes(keyword.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 async function loadRepos(configPath: string): Promise<{ repos: Repo[]; source: string }> {
   if (!(await fs.pathExists(configPath))) {
     validateRepos(DEFAULT_REPOS);
@@ -330,10 +436,7 @@ async function loadRepos(configPath: string): Promise<{ repos: Repo[]; source: s
   const repos = await fs.readJson(configPath);
   validateRepos(repos);
 
-  return {
-    repos,
-    source: configPath
-  };
+  return { repos, source: configPath };
 }
 
 function validateRepos(repos: unknown): asserts repos is Repo[] {
@@ -361,12 +464,11 @@ function parseTimeout(value: string, flag: string): number {
   if (!Number.isInteger(n) || n < 0) {
     throw new Error(`${flag} must be a non-negative integer (0 = no limit).`);
   }
-  return n * 1000; // convert to ms for execa
+  return n * 1000;
 }
 
 function formatError(err: unknown, timeoutMs: number): string {
   if (err instanceof Error) {
-    // execa sets .timedOut = true on timeout kills
     if ((err as NodeJS.ErrnoException & { timedOut?: boolean }).timedOut) {
       return `timed out after ${timeoutMs / 1000}s`;
     }
