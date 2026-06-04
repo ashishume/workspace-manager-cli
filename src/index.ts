@@ -186,41 +186,43 @@ async function setupRepo({
   const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
 
   // ── clone / pull ──────────────────────────────────────────────────────────
-  try {
-    if (exists) {
-      const spinner = ora(`${repo.name}: already exists`).start();
+  if (exists) {
+    const spinner = ora(`${repo.name}: already exists`).start();
 
-      if (pull) {
-        spinner.text = `${repo.name}: pulling latest changes`;
+    if (pull) {
+      spinner.text = `${repo.name}: pulling latest changes`;
+      try {
         await execa("git", ["pull", "--ff-only"], {
           cwd: repoDir,
           env: gitEnv,
           ...(cloneTimeout && { timeout: cloneTimeout })
         });
+      } catch (err) {
+        spinner.fail(`${repo.name}: pull failed`);
+        return { status: "failed", name: repo.name, step: "pull", message: formatError(err, cloneTimeout) };
       }
+    }
 
-      spinner.succeed(`${repo.name}: repository ready`);
-    } else {
-      const spinner = ora(`${repo.name}: cloning`).start();
-      const args = ["clone", repo.url, repoDir];
+    spinner.succeed(`${repo.name}: repository ready`);
+  } else {
+    const spinner = ora(`${repo.name}: cloning`).start();
+    const args = ["clone", repo.url, repoDir];
 
-      if (repo.branch) {
-        args.splice(1, 0, "--branch", repo.branch);
-      }
+    if (repo.branch) {
+      args.splice(1, 0, "--branch", repo.branch);
+    }
 
+    try {
       await execa("git", args, {
         env: gitEnv,
         ...(cloneTimeout && { timeout: cloneTimeout })
       });
-      spinner.succeed(`${repo.name}: cloned`);
+    } catch (err) {
+      spinner.fail(`${repo.name}: clone failed`);
+      return { status: "failed", name: repo.name, step: "clone", message: formatError(err, cloneTimeout) };
     }
-  } catch (err) {
-    return {
-      status: "failed",
-      name: repo.name,
-      step: exists ? "pull" : "clone",
-      message: formatError(err, cloneTimeout)
-    };
+
+    spinner.succeed(`${repo.name}: cloned`);
   }
 
   if (skipInstall) {
@@ -233,6 +235,13 @@ async function setupRepo({
     : await detectProjectType(repoDir);
 
   const isPython = projectType === "python" || projectType === "fastapi";
+
+  // Guard: skip install entirely if the repo has no recognizable project files.
+  // This handles empty repos (git clone exits 0 but leaves no files).
+  if (!isPython && !(await fs.pathExists(path.join(repoDir, "package.json")))) {
+    ora(`${repo.name}: no package.json found — skipping install`).warn();
+    return { status: "ok", name: repo.name };
+  }
 
   // ── install ───────────────────────────────────────────────────────────────
   if (isPython) {
@@ -248,42 +257,34 @@ async function setupRepo({
       };
     }
   } else {
+    const installSpinner = ora(`${repo.name}: installing dependencies`).start();
     try {
-      const installSpinner = ora(`${repo.name}: installing dependencies`).start();
       await execa(packageManager, ["install"], {
         cwd: repoDir,
         ...(installTimeout && { timeout: installTimeout })
       });
       installSpinner.succeed(`${repo.name}: dependencies installed`);
     } catch (err) {
-      return {
-        status: "failed",
-        name: repo.name,
-        step: "install",
-        message: formatError(err, installTimeout)
-      };
+      installSpinner.fail(`${repo.name}: install failed`);
+      return { status: "failed", name: repo.name, step: "install", message: formatError(err, installTimeout) };
     }
   }
 
   // ── build (JS/TS only) ────────────────────────────────────────────────────
   if (!isPython && !skipBuild) {
-    try {
-      const runBuild = await resolveBuild(repo, projectType, repoDir);
-      if (runBuild) {
-        const buildSpinner = ora(`${repo.name}: building`).start();
+    const runBuild = await resolveBuild(repo, projectType, repoDir);
+    if (runBuild) {
+      const buildSpinner = ora(`${repo.name}: building`).start();
+      try {
         await execa(packageManager, ["run", "build"], {
           cwd: repoDir,
           ...(buildTimeout && { timeout: buildTimeout })
         });
         buildSpinner.succeed(`${repo.name}: build complete`);
+      } catch (err) {
+        buildSpinner.fail(`${repo.name}: build failed`);
+        return { status: "failed", name: repo.name, step: "build", message: formatError(err, buildTimeout) };
       }
-    } catch (err) {
-      return {
-        status: "failed",
-        name: repo.name,
-        step: "build",
-        message: formatError(err, buildTimeout)
-      };
     }
   }
 
@@ -468,11 +469,19 @@ function parseTimeout(value: string, flag: string): number {
 }
 
 function formatError(err: unknown, timeoutMs: number): string {
-  if (err instanceof Error) {
-    if ((err as NodeJS.ErrnoException & { timedOut?: boolean }).timedOut) {
-      return `timed out after ${timeoutMs / 1000}s`;
-    }
-    return err.message.split("\n")[0].trim();
+  if (!(err instanceof Error)) return String(err);
+
+  const e = err as NodeJS.ErrnoException & { timedOut?: boolean; stderr?: string; stdout?: string };
+
+  if (e.timedOut) return `timed out after ${timeoutMs / 1000}s`;
+
+  // execa puts the real error output in stderr (or stdout for some tools)
+  const detail = (e.stderr ?? e.stdout ?? "").trim();
+  if (detail) {
+    // return the last non-empty line — that's usually the actual error
+    const lines = detail.split("\n").map(l => l.trim()).filter(Boolean);
+    return lines[lines.length - 1] ?? detail;
   }
-  return String(err);
+
+  return err.message.split("\n")[0].trim();
 }
